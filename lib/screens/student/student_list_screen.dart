@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:intl/intl.dart';
 import '../../models/center.dart';
 import 'student_register_screen.dart';
 import 'student_detail_screen.dart';
@@ -14,10 +15,10 @@ class StudentListScreen extends StatefulWidget {
 }
 
 class _StudentListScreenState extends State<StudentListScreen> with SingleTickerProviderStateMixin {
-  late TabController _tabController;
-  List<Map<String, dynamic>> students = [];
+  List<Map<String, dynamic>> allStudents = [];
   bool isLoading = true;
-  String searchQuery = '';
+
+  late TabController _tabController;
 
   @override
   void initState() {
@@ -27,152 +28,147 @@ class _StudentListScreenState extends State<StudentListScreen> with SingleTicker
   }
 
   Future<void> _loadStudents() async {
+    setState(() => isLoading = true);
     try {
       final response = await Supabase.instance.client
           .from('students')
-          .select()
+          .select('id, name, student_phone, parent_phone, grade, school, seat_number, status, enrollment_start, enrollment_end, memo')
           .eq('center_id', widget.center.id)
-          .order('name', ascending: true);
+          .order('name');
 
       setState(() {
-        students = List<Map<String, dynamic>>.from(response);
+        allStudents = List<Map<String, dynamic>>.from(response);
         isLoading = false;
       });
     } catch (e) {
+      print('학생 목록 로드 오류: $e');
       setState(() => isLoading = false);
     }
   }
 
-  // 학생 상세 화면에서 돌아올 때 새로고침
-  Future<void> _refreshStudents() async {
-    setState(() => isLoading = true);
-    await _loadStudents();
-  }
-
-  List<Map<String, dynamic>> get filteredStudents {
-    List<Map<String, dynamic>> list = students;
-
-    if (searchQuery.isNotEmpty) {
-      final query = searchQuery.toLowerCase();
-      list = list.where((s) {
-        final name = (s['name'] ?? '').toLowerCase();
-        final phone = (s['phone'] ?? '').toLowerCase();
-        final seat = (s['seat_number'] ?? '').toLowerCase();
-        return name.contains(query) || phone.contains(query) || seat.contains(query);
-      }).toList();
-    }
-
+  List<Map<String, dynamic>> get activeStudents => allStudents.where((s) {
+    final status = s['status']?.toString() ?? 'active';
+    final endDateStr = s['enrollment_end']?.toString();
     final now = DateTime.now().toIso8601String().substring(0, 10);
+    if (status == 'inactive') return false;
+    if (endDateStr == null || endDateStr.isEmpty) return true;
+    return endDateStr.compareTo(now) >= 0;
+  }).toList();
 
-    if (_tabController.index == 1) { // 재학생
-      list = list.where((s) {
-        final endDate = s['enrollment_end'];
-        return endDate == null || endDate.toString().compareTo(now) >= 0;
-      }).toList();
-    } else if (_tabController.index == 2) { // 퇴원생
-      list = list.where((s) {
-        final endDate = s['enrollment_end'];
-        return endDate != null && endDate.toString().compareTo(now) < 0;
-      }).toList();
+  List<Map<String, dynamic>> get inactiveStudents => allStudents.where((s) {
+    final status = s['status']?.toString() ?? 'active';
+    final endDateStr = s['enrollment_end']?.toString();
+    final now = DateTime.now().toIso8601String().substring(0, 10);
+    if (status == 'inactive') return true;
+    if (endDateStr == null || endDateStr.isEmpty) return false;
+    return endDateStr.compareTo(now) < 0;
+  }).toList();
+
+  String _getDday(String? endDateStr) {
+    if (endDateStr == null || endDateStr.isEmpty) return '무기한';
+    try {
+      final endDate = DateTime.parse(endDateStr);
+      final diff = endDate.difference(DateTime.now()).inDays;
+      return diff >= 0 ? 'D+$diff' : 'D$diff';
+    } catch (_) {
+      return '-';
     }
-
-    return list;
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.center.displayName} 학생 목록'),
+        title: Text('${widget.center.displayName} 학생 관리'),
         backgroundColor: Colors.blue.shade700,
         bottom: TabBar(
           controller: _tabController,
-          onTap: (_) => setState(() {}),
           tabs: const [
             Tab(text: '전체'),
-            Tab(text: '재학생'),
+            Tab(text: '재원생'),
             Tab(text: '퇴원생'),
           ],
         ),
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: TextField(
-              decoration: InputDecoration(
-                hintText: '이름, 전화번호, 좌석번호 검색',
-                prefixIcon: const Icon(Icons.search),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              onChanged: (value) => setState(() => searchQuery = value),
+      body: isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : TabBarView(
+              controller: _tabController,
+              children: [
+                _buildTable(allStudents, '전체'),
+                _buildTable(activeStudents, '재원생'),
+                _buildTable(inactiveStudents, '퇴원생'),
+              ],
             ),
-          ),
-          Expanded(
-            child: isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : TabBarView(
-                    controller: _tabController,
-                    children: [
-                      _buildStudentList(filteredStudents),
-                      _buildStudentList(filteredStudents),
-                      _buildStudentList(filteredStudents),
-                    ],
-                  ),
-          ),
-        ],
-      ),
       floatingActionButton: FloatingActionButton(
+        child: const Icon(Icons.person_add),
         onPressed: () {
           Navigator.push(
             context,
-            MaterialPageRoute(
-              builder: (context) => StudentRegisterScreen(center: widget.center),
-            ),
-          ).then((_) => _refreshStudents());   // 등록 후 새로고침
+            MaterialPageRoute(builder: (_) => StudentRegisterScreen(center: widget.center)),
+          ).then((_) => _loadStudents());
         },
-        child: const Icon(Icons.person_add),
       ),
     );
   }
 
-  Widget _buildStudentList(List<Map<String, dynamic>> list) {
-    if (list.isEmpty) {
-      return const Center(child: Text('해당 조건에 맞는 학생이 없습니다.'));
+  Widget _buildTable(List<Map<String, dynamic>> students, String title) {
+    if (students.isEmpty) {
+      return Center(child: Text('$title 학생이 없습니다.', style: const TextStyle(color: Colors.grey)));
     }
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      itemCount: list.length,
-      itemBuilder: (context, index) {
-        final student = list[index];
-        return Card(
-          margin: const EdgeInsets.only(bottom: 12),
-          child: ListTile(
-            leading: CircleAvatar(
-              backgroundColor: Colors.blue.shade100,
-              child: Text((student['name'] ?? '?').substring(0, 1)),
-            ),
-            title: Text(student['name'] ?? '이름 없음'),
-            subtitle: Text('${student['school'] ?? ''} • 좌석 ${student['seat_number'] ?? '-'}'),
-            trailing: Text(student['phone'] ?? ''),
-            onTap: () {
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: DataTable(
+        columns: const [
+          DataColumn(label: Text('상태')),
+          DataColumn(label: Text('좌석')),
+          DataColumn(label: Text('이름')),
+          DataColumn(label: Text('학년')),
+          DataColumn(label: Text('학교')),
+          DataColumn(label: Text('학생전화')),
+          DataColumn(label: Text('학부모전화')),
+          DataColumn(label: Text('이용기간')),
+          DataColumn(label: Text('D-Day')),
+        ],
+        rows: students.map((s) {
+          final isActive = s['status'] == 'active';
+          final endDateStr = s['enrollment_end']?.toString();
+          final dday = _getDday(endDateStr);
+
+          return DataRow(
+            cells: [
+              DataCell(Chip(
+                label: Text(isActive ? '재원생' : '퇴원생'),
+                backgroundColor: isActive ? Colors.green.shade100 : Colors.red.shade100,
+                labelStyle: TextStyle(color: isActive ? Colors.green : Colors.red),
+              )),
+              DataCell(Text(s['seat_number']?.toString() ?? '-')),
+              DataCell(Text(s['name'] ?? '')),
+              DataCell(Text(s['grade'] ?? '-')),
+              DataCell(Text(s['school']?.toString() ?? '-')),
+              DataCell(Text(s['student_phone']?.toString() ?? '-')),
+              DataCell(Text(s['parent_phone']?.toString() ?? '-')),
+              DataCell(Text(endDateStr != null ? endDateStr.substring(0, 10) : '무기한')),
+              DataCell(Text(dday, style: TextStyle(
+                color: dday.startsWith('D-') ? Colors.red : Colors.blue,
+                fontWeight: FontWeight.bold,
+              ))),
+            ],
+            onSelectChanged: (_) {
               Navigator.push(
                 context,
                 MaterialPageRoute(
                   builder: (context) => StudentDetailScreen(
-                    student: student,
+                    student: s,
                     center: widget.center,
                   ),
                 ),
-              ).then((result) {
-                if (result == true) {
-                  _refreshStudents();   // 수정 후 새로고침
-                }
-              });
+              );
             },
-          ),
-        );
-      },
+          );
+        }).toList(),
+      ),
     );
   }
 }
